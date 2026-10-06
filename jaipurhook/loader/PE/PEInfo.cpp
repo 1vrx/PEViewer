@@ -1,17 +1,9 @@
-/*
-PEInfo.cpp
-*/
-
 #include "PEInfo.h"
 
 namespace Info
-{	
-
+{
     fileInfo targetFile;
 
-   
-    
-	//returns uniqueptr of ifstream
     std::unique_ptr<std::ifstream> getFile(const char* theDllPath)
     {
         if (GetFileAttributesA(theDllPath) == INVALID_FILE_ATTRIBUTES)
@@ -22,8 +14,6 @@ namespace Info
 
         auto file = std::make_unique<std::ifstream>(theDllPath, std::ios::binary | std::ios::ate);
 
-
-        
         if (!file->is_open())
         {
             std::cout << "\nFailed to open file\n";
@@ -33,10 +23,8 @@ namespace Info
         return file;
     }
 
-    //returns fileSize too
     std::pair<bool, uintptr_t> checkFileSize(std::unique_ptr<std::ifstream>& dll)
     {
-
         auto filesize = dll->tellg();
         if (filesize < 0x1000)
         {
@@ -48,183 +36,17 @@ namespace Info
         return { TRUE, static_cast<uintptr_t>(filesize) };
     }
 
-    bool loaddll(std::unique_ptr<std::ifstream>& dll)  //could std::ifstream &dll and when i pass the value i deref.
+    bool loaddll(std::unique_ptr<std::ifstream>& dll)
     {
-        targetFile.data.resize(targetFile.fileSize);  
-
+        targetFile.data.resize(targetFile.fileSize);
         dll->seekg(0, std::ios::beg);
         dll->read(reinterpret_cast<char*>(targetFile.data.data()), targetFile.fileSize);
         dll->close();
-
-
         return TRUE;
-    }
-
-    //used ChatGPT to make the maths in this function cleaner
-    size_t RvaToOffset(DWORD rva)
-    {
-        if (!targetFile.pFileHeader || targetFile.pSectionHeaders.empty())
-            return 0;
-
-        for (const auto& section : targetFile.pSectionHeaders)
-        {
-            if (rva >= section.VirtualAddress && rva < (section.VirtualAddress + section.Misc.VirtualSize))
-            {
-                return (rva - section.VirtualAddress) + section.PointerToRawData;
-            }
-        }
-        return 0; 
-    }
-    //used ChatGPT to make the maths in this function cleaner
-    void ParseDataDirectories()
-    {
-        if (targetFile.is64Bit && targetFile.pOptHeader64)
-        {
-            targetFile.pDataDirectories = targetFile.pOptHeader64->DataDirectory;
-        }
-        else if (!targetFile.is64Bit && targetFile.pOptHeader32)
-        {
-            targetFile.pDataDirectories = targetFile.pOptHeader32->DataDirectory;
-        }
-    }
-
-    void ParseImports()
-    {
-        targetFile.imports.clear();
-        if (!targetFile.pDataDirectories) return;
-
-        auto& importDir = targetFile.pDataDirectories[IMAGE_DIRECTORY_ENTRY_IMPORT];
-        if (importDir.Size == 0) return;
-
-        size_t offset = RvaToOffset(importDir.VirtualAddress);
-        if (offset == 0) return;
-
-        IMAGE_IMPORT_DESCRIPTOR* desc = (IMAGE_IMPORT_DESCRIPTOR*)(targetFile.data.data() + offset);
-
-        while (desc->Name != 0)
-        {
-            ImportedDLL dll;
-            size_t dllNameOffset = RvaToOffset(desc->Name);
-            if (dllNameOffset != 0)
-                dll.name = (char*)(targetFile.data.data() + dllNameOffset);
-            else
-                dll.name = "[Unknown DLL]";
-
-            DWORD thunkRVA = desc->OriginalFirstThunk ? desc->OriginalFirstThunk : desc->FirstThunk;
-            size_t thunkOffset = RvaToOffset(thunkRVA);
-
-            if (targetFile.is64Bit)
-            {
-                IMAGE_THUNK_DATA64* thunk = (IMAGE_THUNK_DATA64*)(targetFile.data.data() + thunkOffset);
-                while (thunk->u1.AddressOfData != 0)
-                {
-                    ImportedFunction func;
-                    if (thunk->u1.Ordinal & IMAGE_ORDINAL_FLAG64)
-                    {
-                        func.name = "Ordinal #" + std::to_string(thunk->u1.Ordinal & 0xFFFF); //0xFFFF
-                    }
-                    else
-                    {
-                        size_t byNameOffset = RvaToOffset((DWORD)thunk->u1.AddressOfData);
-                        if (byNameOffset != 0)
-                        {
-                            IMAGE_IMPORT_BY_NAME* byName = (IMAGE_IMPORT_BY_NAME*)(targetFile.data.data() + byNameOffset);
-                            func.name = (char*)byName->Name;
-                        }
-                        else
-                        {
-                            func.name = "[Unknown Import]";
-                        }
-                    }
-                    func.rva = thunkRVA;
-                    func.fileOffset = thunkOffset;
-                    dll.functions.push_back(func);
-                    thunk++;
-                    thunkRVA += sizeof(IMAGE_THUNK_DATA64);
-                    thunkOffset += sizeof(IMAGE_THUNK_DATA64);
-                }
-            }
-            else // 32bit ver
-            {
-                IMAGE_THUNK_DATA32* thunk = (IMAGE_THUNK_DATA32*)(targetFile.data.data() + thunkOffset);
-                while (thunk->u1.AddressOfData != 0)
-                {
-                    ImportedFunction func;
-                    if (thunk->u1.Ordinal & IMAGE_ORDINAL_FLAG32)
-                    {
-                        func.name = "Ordinal #" + std::to_string(thunk->u1.Ordinal & 0xFFFF);
-                    }
-                    else
-                    {
-                        size_t byNameOffset = RvaToOffset(thunk->u1.AddressOfData);
-                        if (byNameOffset != 0)
-                        {
-                            IMAGE_IMPORT_BY_NAME* byName = (IMAGE_IMPORT_BY_NAME*)(targetFile.data.data() + byNameOffset);
-                            func.name = (char*)byName->Name;
-                        }
-                        else
-                        {
-                            func.name = "[Unknown Import]";
-                        }
-                    }
-                    func.rva = thunkRVA;
-                    func.fileOffset = thunkOffset;
-                    dll.functions.push_back(func);
-                    thunk++;
-                    thunkRVA += sizeof(IMAGE_THUNK_DATA32);
-                    thunkOffset += sizeof(IMAGE_THUNK_DATA32);
-                }
-            }
-
-            if (!dll.functions.empty())
-                targetFile.imports.push_back(dll);
-            desc++;
-        }
-    }
-
-    void ParseExports()
-    {
-        targetFile.exports.clear();
-        if (!targetFile.pDataDirectories) return;
-
-        auto& exportDirData = targetFile.pDataDirectories[IMAGE_DIRECTORY_ENTRY_EXPORT];
-        if (exportDirData.Size == 0) return;
-
-        size_t offset = RvaToOffset(exportDirData.VirtualAddress);
-        if (offset == 0) return;
-
-        IMAGE_EXPORT_DIRECTORY* dir = (IMAGE_EXPORT_DIRECTORY*)(targetFile.data.data() + offset);
-
-        DWORD* nameRVAs = (DWORD*)(targetFile.data.data() + RvaToOffset(dir->AddressOfNames));
-        DWORD* funcRVAs = (DWORD*)(targetFile.data.data() + RvaToOffset(dir->AddressOfFunctions));
-        WORD* ordinals = (WORD*)(targetFile.data.data() + RvaToOffset(dir->AddressOfNameOrdinals));
-
-        size_t funcTableOffset = RvaToOffset(dir->AddressOfFunctions);
-
-        for (DWORD i = 0; i < dir->NumberOfNames; ++i)
-        {
-            ExportedFunction func;
-
-            size_t nameOffset = RvaToOffset(nameRVAs[i]);
-            if (nameOffset != 0)
-                func.name = (char*)(targetFile.data.data() + nameOffset);
-            else
-                func.name = "[Unknown Export]";
-
-            func.ordinal = ordinals[i];
-            func.rva = funcRVAs[func.ordinal];
-            
-            //store in func table
-            func.fileOffset = funcTableOffset + (func.ordinal * sizeof(DWORD));
-
-            if (func.rva != 0)
-                targetFile.exports.push_back(func);
-        }
     }
 
     void getHeaders()
     {
-        //reset on every call, otherwise loading a new file will mess it up
         targetFile.pDosHeader = nullptr;
         targetFile.pNtHeader = nullptr;
         targetFile.pOptHeader32 = nullptr;
@@ -232,116 +54,268 @@ namespace Info
         targetFile.pDataDirectories = nullptr;
         targetFile.pFileHeader = nullptr;
         targetFile.pSectionHeaders.clear();
-        targetFile.imports.clear(); 
-        targetFile.exports.clear(); 
+        targetFile.imports.clear();
+        targetFile.exports.clear();
         targetFile.arch = Architecture::Unknown;
         targetFile.is64Bit = false;
 
         if (targetFile.data.empty()) return;
 
-        targetFile.pDosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(targetFile.data.data());
+        PEParser parser(targetFile.data.data(), targetFile.fileSize);
 
-        if (targetFile.pDosHeader->e_magic != 0x5A4D) 
-        {
-            std::cout << "\nThis file format is not supported (failed to locate DOS header)";
-            targetFile.pDosHeader = nullptr; 
+        if (parser.Parse() != PEError::Success) {
+            std::cout << "\nFailed to parse PE file structure safely.\n";
             return;
         }
 
-        if (targetFile.pDosHeader->e_lfanew > 0 &&
-            (targetFile.pDosHeader->e_lfanew + sizeof(IMAGE_NT_HEADERS)) < targetFile.fileSize)
-        {
-            targetFile.pNtHeader = reinterpret_cast<IMAGE_NT_HEADERS*>(targetFile.data.data() + targetFile.pDosHeader->e_lfanew);
-        }
-        else
-        {
-            std::cout << "\nFailed to locate NT header (invalid e_lfanew)";
-            return;
-        }
+        targetFile.pDosHeader = parser.GetDosHeader();
+        targetFile.pNtHeader = parser.GetNtHeaders();
+        targetFile.pFileHeader = parser.GetFileHeader();
+        targetFile.pOptHeader32 = parser.GetOptHeader32();
+        targetFile.pOptHeader64 = parser.GetOptHeader64();
+        targetFile.pDataDirectories = parser.GetDataDirectories();
+        targetFile.pSectionHeaders = parser.GetSections();
+        targetFile.is64Bit = parser.Is64Bit();
+        targetFile.arch = parser.GetArchitecture();
 
-        if (targetFile.pNtHeader->Signature != IMAGE_NT_SIGNATURE)
-        {
-            std::cout << "\nInvalid PE signature";
-            targetFile.pNtHeader = nullptr;
-            return;
-        }
+        auto exports_res = parser.GetExports();
+        if (exports_res.is_valid()) targetFile.exports = exports_res.value;
 
+        auto imports_res = parser.GetImports();
+        if (imports_res.is_valid()) targetFile.imports = imports_res.value;
+    }
+}
 
-        targetFile.pFileHeader = &targetFile.pNtHeader->FileHeader;
+PEParser::PEParser(const uint8_t* data, size_t size)
+    : buffer_(data), size_(size) {
+}
 
+std::string PEParser::SafeReadString(size_t offset) const {
+    if (offset >= size_) return "";
+    size_t max_len = size_ - offset;
+    const char* str = reinterpret_cast<const char*>(buffer_ + offset);
+    return std::string(str, strnlen(str, max_len));
+}
 
-        WORD magic = targetFile.pNtHeader->OptionalHeader.Magic;
+PEError PEParser::Parse() {
+    if (size_ < sizeof(IMAGE_DOS_HEADER)) return PEError::FileTooSmall;
 
-        if (magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
-        {
-            targetFile.is64Bit = false;
-            targetFile.pOptHeader32 = (IMAGE_OPTIONAL_HEADER32*)&targetFile.pNtHeader->OptionalHeader;
-        }
-        else if (magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
-        {
-            targetFile.is64Bit = true;
-            targetFile.pOptHeader64 = (IMAGE_OPTIONAL_HEADER64*)&targetFile.pNtHeader->OptionalHeader;
-        }
-        else
-        {
-            std::cout << "\nInvalid Optional Header Magic number";
-            targetFile.pNtHeader = nullptr;
-            targetFile.pFileHeader = nullptr;
-            return;
-        }
-
-        getSectionHeaders();
-        targetFile.arch = getArchitecture(); 
-
-        ParseDataDirectories();
-        ParseImports();
-        ParseExports();
-
-        return;
-
+    dos_header_ = ReadAt<IMAGE_DOS_HEADER>(0);
+    if (!dos_header_ || dos_header_->e_magic != IMAGE_DOS_SIGNATURE) {
+        return PEError::InvalidDosHeader;
     }
 
-    void getSectionHeaders()
-    {
-        if (!targetFile.pNtHeader) return;
+    size_t nt_offset = dos_header_->e_lfanew;
+    nt_headers_ = ReadAt<IMAGE_NT_HEADERS>(nt_offset);
+    if (!nt_headers_ || nt_headers_->Signature != IMAGE_NT_SIGNATURE) {
+        return PEError::InvalidNtHeader;
+    }
 
+    file_header_ = &nt_headers_->FileHeader;
 
-        IMAGE_SECTION_HEADER* pCurrentSection = IMAGE_FIRST_SECTION(targetFile.pNtHeader);
+    uint16_t magic = nt_headers_->OptionalHeader.Magic;
+    if (magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+        is_64bit_ = false;
+        opt_header_32_ = reinterpret_cast<IMAGE_OPTIONAL_HEADER32*>(&nt_headers_->OptionalHeader);
+        data_dirs_ = opt_header_32_->DataDirectory;
+    }
+    else if (magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
+        is_64bit_ = true;
+        opt_header_64_ = reinterpret_cast<IMAGE_OPTIONAL_HEADER64*>(&nt_headers_->OptionalHeader);
+        data_dirs_ = opt_header_64_->DataDirectory;
+    }
+    else {
+        return PEError::InvalidOptionalHeader;
+    }
 
-        for (int i = 0; i < targetFile.pFileHeader->NumberOfSections; ++i)
-        {
-            if (reinterpret_cast<uintptr_t>(pCurrentSection) + sizeof(IMAGE_SECTION_HEADER) >
-                reinterpret_cast<uintptr_t>(targetFile.data.data()) + targetFile.fileSize)
-            {
-                std::cout << "\nError: Section header " << i << " is out of file bounds.";
-                break;
+    size_t section_offset = nt_offset + offsetof(IMAGE_NT_HEADERS, OptionalHeader) + file_header_->SizeOfOptionalHeader;
+
+    if (section_offset + (file_header_->NumberOfSections * sizeof(IMAGE_SECTION_HEADER)) > size_) {
+        return PEError::SectionTableOutOfBounds;
+    }
+
+    sections_.reserve(file_header_->NumberOfSections);
+    for (int i = 0; i < file_header_->NumberOfSections; ++i) {
+        if (auto* sec = ReadAt<IMAGE_SECTION_HEADER>(section_offset + (i * sizeof(IMAGE_SECTION_HEADER)))) {
+            sections_.push_back(*sec);
+        }
+    }
+
+    return PEError::Success;
+}
+
+Architecture PEParser::GetArchitecture() const {
+    if (!file_header_) return Architecture::Unknown;
+    switch (file_header_->Machine) {
+    case IMAGE_FILE_MACHINE_I386:  return Architecture::X86;
+    case IMAGE_FILE_MACHINE_AMD64: return Architecture::X64;
+    case IMAGE_FILE_MACHINE_ARM:   return Architecture::ARM;
+    case IMAGE_FILE_MACHINE_ARM64: return Architecture::ARM64;
+    default:                       return Architecture::Unknown;
+    }
+}
+
+Result<uint32_t> PEParser::RvaToOffset(uint32_t rva) const {
+    for (const auto& section : sections_) {
+        uint32_t virtual_size = section.Misc.VirtualSize ? section.Misc.VirtualSize : section.SizeOfRawData;
+        if (rva >= section.VirtualAddress && rva < section.VirtualAddress + virtual_size) {
+            uint32_t offset = section.PointerToRawData + (rva - section.VirtualAddress);
+            if (offset >= size_) return { 0, PEError::RvaOutOfBounds };
+            return { offset, PEError::Success };
+        }
+    }
+    return { 0, PEError::RvaOutOfBounds };
+}
+
+Result<std::vector<ExportedFunction>> PEParser::GetExports() const {
+    if (!data_dirs_) return { {}, PEError::InvalidNtHeader };
+
+    auto& export_dir_data = data_dirs_[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (export_dir_data.Size == 0) return { {}, PEError::Success };
+
+    auto offset_res = RvaToOffset(export_dir_data.VirtualAddress);
+    if (!offset_res.is_valid()) return { {}, offset_res.error };
+
+    auto* dir = ReadAt<IMAGE_EXPORT_DIRECTORY>(offset_res.value);
+    if (!dir) return { {}, PEError::DirectoryInvalid };
+
+    auto name_rvas_res = RvaToOffset(dir->AddressOfNames);
+    auto func_rvas_res = RvaToOffset(dir->AddressOfFunctions);
+    auto ordinals_res = RvaToOffset(dir->AddressOfNameOrdinals);
+
+    if (!name_rvas_res.is_valid() || !func_rvas_res.is_valid() || !ordinals_res.is_valid()) {
+        return { {}, PEError::DirectoryInvalid };
+    }
+
+    uint32_t* name_rvas = ReadAt<uint32_t>(name_rvas_res.value);
+    uint32_t* func_rvas = ReadAt<uint32_t>(func_rvas_res.value);
+    uint16_t* ordinals = ReadAt<uint16_t>(ordinals_res.value);
+
+    if (!name_rvas || !func_rvas || !ordinals) return { {}, PEError::DirectoryInvalid };
+
+    std::vector<ExportedFunction> exports;
+    size_t func_table_offset = func_rvas_res.value;
+
+    for (DWORD i = 0; i < dir->NumberOfNames; ++i) {
+        if ((i * sizeof(uint32_t)) + name_rvas_res.value >= size_) break;
+        if ((i * sizeof(uint16_t)) + ordinals_res.value >= size_) break;
+
+        ExportedFunction func;
+        func.ordinal = ordinals[i];
+
+        if ((func.ordinal * sizeof(uint32_t)) + func_table_offset >= size_) continue;
+
+        func.rva = func_rvas[func.ordinal];
+        func.fileOffset = func_table_offset + (func.ordinal * sizeof(DWORD));
+
+        auto name_off = RvaToOffset(name_rvas[i]);
+        if (name_off.is_valid()) {
+            func.name = SafeReadString(name_off.value);
+        }
+        else {
+            func.name = "[Unknown Export]";
+        }
+
+        if (func.rva != 0) exports.push_back(func);
+    }
+
+    return { exports, PEError::Success };
+}
+
+Result<std::vector<ImportedDLL>> PEParser::GetImports() const {
+    if (!data_dirs_) return { {}, PEError::InvalidNtHeader };
+
+    auto& import_dir = data_dirs_[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (import_dir.Size == 0) return { {}, PEError::Success };
+
+    auto offset_res = RvaToOffset(import_dir.VirtualAddress);
+    if (!offset_res.is_valid()) return { {}, offset_res.error };
+
+    std::vector<ImportedDLL> imports;
+    size_t current_offset = offset_res.value;
+
+    while (true) {
+        auto* desc = ReadAt<IMAGE_IMPORT_DESCRIPTOR>(current_offset);
+        if (!desc || desc->Name == 0) break;
+
+        ImportedDLL dll;
+        auto dll_name_off = RvaToOffset(desc->Name);
+        if (dll_name_off.is_valid()) {
+            dll.name = SafeReadString(dll_name_off.value);
+        }
+        else {
+            dll.name = "[Unknown DLL]";
+        }
+
+        DWORD thunk_rva = desc->OriginalFirstThunk ? desc->OriginalFirstThunk : desc->FirstThunk;
+        auto thunk_offset = RvaToOffset(thunk_rva);
+
+        if (thunk_offset.is_valid()) {
+            size_t t_off = thunk_offset.value;
+            DWORD curr_thunk_rva = thunk_rva;
+
+            if (is_64bit_) {
+                while (auto* thunk = ReadAt<IMAGE_THUNK_DATA64>(t_off)) {
+                    if (thunk->u1.AddressOfData == 0) break;
+
+                    ImportedFunction func;
+                    func.rva = curr_thunk_rva;
+                    func.fileOffset = t_off;
+
+                    if (thunk->u1.Ordinal & IMAGE_ORDINAL_FLAG64) {
+                        func.name = "Ordinal #" + std::to_string(thunk->u1.Ordinal & 0xFFFF);
+                    }
+                    else {
+                        auto byname_off = RvaToOffset((DWORD)thunk->u1.AddressOfData);
+                        if (byname_off.is_valid()) {
+                            func.name = SafeReadString(byname_off.value + sizeof(WORD));
+                        }
+                        else {
+                            func.name = "[Unknown Import]";
+                        }
+                    }
+                    dll.functions.push_back(func);
+                    t_off += sizeof(IMAGE_THUNK_DATA64);
+                    curr_thunk_rva += sizeof(IMAGE_THUNK_DATA64);
+                }
             }
-            targetFile.pSectionHeaders.push_back(*pCurrentSection);
-            pCurrentSection++;
+            else {
+                while (auto* thunk = ReadAt<IMAGE_THUNK_DATA32>(t_off)) {
+                    if (thunk->u1.AddressOfData == 0) break;
+
+                    ImportedFunction func;
+                    func.rva = curr_thunk_rva;
+                    func.fileOffset = t_off;
+
+                    if (thunk->u1.Ordinal & IMAGE_ORDINAL_FLAG32) {
+                        func.name = "Ordinal #" + std::to_string(thunk->u1.Ordinal & 0xFFFF);
+                    }
+                    else {
+                        auto byname_off = RvaToOffset(thunk->u1.AddressOfData);
+                        if (byname_off.is_valid()) {
+                            func.name = SafeReadString(byname_off.value + sizeof(WORD));
+                        }
+                        else {
+                            func.name = "[Unknown Import]";
+                        }
+                    }
+                    dll.functions.push_back(func);
+                    t_off += sizeof(IMAGE_THUNK_DATA32);
+                    curr_thunk_rva += sizeof(IMAGE_THUNK_DATA32);
+                }
+            }
         }
+
+        if (!dll.functions.empty()) imports.push_back(dll);
+        current_offset += sizeof(IMAGE_IMPORT_DESCRIPTOR);
     }
 
-    
-    Architecture getArchitecture()
-    {
-        switch (targetFile.pFileHeader->Machine)
-        {
-        case IMAGE_FILE_MACHINE_I386:  return Architecture::X86;
-        case IMAGE_FILE_MACHINE_AMD64: return Architecture::X64;
-        case IMAGE_FILE_MACHINE_ARM:   return Architecture::ARM;
-        case IMAGE_FILE_MACHINE_ARM64: return Architecture::ARM64;
-        default:                       return Architecture::Unknown;
-        }
-    }
-   
-	
+    return { imports, PEError::Success };
 }
 
 const char* fileInfo::getArchString() const
 {
-
-    switch (this->arch)
-    {
+    switch (this->arch) {
     case Architecture::X86: return "x86 (32-bit)";
     case Architecture::X64: return "x64 (64-bit)";
     case Architecture::ARM: return "ARM";
@@ -355,35 +329,16 @@ const char* fileInfo::getFileTypeString() const
     if (!this->pFileHeader || (!this->pOptHeader32 && !this->pOptHeader64)) return "N/A (PE not parsed)";
     WORD subsystem = this->is64Bit ? this->pOptHeader64->Subsystem : this->pOptHeader32->Subsystem;
 
-    if (subsystem == IMAGE_SUBSYSTEM_NATIVE)
-        return "System Driver (.sys)";
-
-    if (this->pFileHeader->Characteristics & IMAGE_FILE_DLL)
-        return "Dynamic Link Library (.dll)";
-
-    if (subsystem == IMAGE_SUBSYSTEM_WINDOWS_GUI)
-        return "Windows GUI App (.exe)";
-
-    if (subsystem == IMAGE_SUBSYSTEM_WINDOWS_CUI)
-        return "Windows Console App (.exe)";
-    
-    if (subsystem == IMAGE_SUBSYSTEM_XBOX)
-        return "Xbox App (.xbx)";
-
-    if (subsystem == IMAGE_SUBSYSTEM_EFI_APPLICATION)
-        return "EFI Application (.efi)";
-
-    if (subsystem == IMAGE_SUBSYSTEM_EFI_BOOT_SERVICE_DRIVER)
-        return "EFI Boot Driver (.efi)";
-
-    if (subsystem == IMAGE_SUBSYSTEM_EFI_RUNTIME_DRIVER)
-        return "EFI Runtime Driver (.efi)";
-
-    if (subsystem == IMAGE_SUBSYSTEM_EFI_ROM)
-        return "EFI Rom (.efi)";
-
-    if (this->pFileHeader->Characteristics & IMAGE_FILE_EXECUTABLE_IMAGE)
-        return "Executable (Unknown Subsystem)";
+    if (subsystem == IMAGE_SUBSYSTEM_NATIVE) return "System Driver (.sys)";
+    if (this->pFileHeader->Characteristics & IMAGE_FILE_DLL) return "Dynamic Link Library (.dll)";
+    if (subsystem == IMAGE_SUBSYSTEM_WINDOWS_GUI) return "Windows GUI App (.exe)";
+    if (subsystem == IMAGE_SUBSYSTEM_WINDOWS_CUI) return "Windows Console App (.exe)";
+    if (subsystem == IMAGE_SUBSYSTEM_XBOX) return "Xbox App (.xbx)";
+    if (subsystem == IMAGE_SUBSYSTEM_EFI_APPLICATION) return "EFI Application (.efi)";
+    if (subsystem == IMAGE_SUBSYSTEM_EFI_BOOT_SERVICE_DRIVER) return "EFI Boot Driver (.efi)";
+    if (subsystem == IMAGE_SUBSYSTEM_EFI_RUNTIME_DRIVER) return "EFI Runtime Driver (.efi)";
+    if (subsystem == IMAGE_SUBSYSTEM_EFI_ROM) return "EFI Rom (.efi)";
+    if (this->pFileHeader->Characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) return "Executable (Unknown Subsystem)";
 
     return "Unknown PE File";
 }

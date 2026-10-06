@@ -1,22 +1,15 @@
-/*
-main.cpp
-*/
-
+/*main.cpp*/
 #include "gui.h"
 #include <thread>
 #include "../imgui/imgui.h"
 #include "globals.h"	
 #include "PE/PEInfo.h"
 
-
-
-
-// --- App State ---
-static char		filePathBuffer[512]		= { 0 }; // inputbuffer
-static int		highlightSelection		= 0; // 0-NONE, 1-DOS, 2-NT, 3-SECTIONS, 4&Above-INDIVIDUAL_SECTIONS
-static size_t	highlightStart			= 0;
-static size_t	highlightEnd			= 0;
-static size_t	g_scrollToOffset		= (size_t)-1; // scroll
+static char		filePathBuffer[512] = { 0 };
+static int		highlightSelection = 0; // 0-NONE, 1-DOS, 2-NT, 3-SECTIONS, 4&Above-INDIVIDUAL_SECTIONS
+static size_t	highlightStart = 0;
+static size_t	highlightEnd = 0;
+static size_t	g_scrollToOffset = (size_t)-1;
 
 int __stdcall wWinMain(
 	HINSTANCE instance,
@@ -32,11 +25,9 @@ int __stdcall wWinMain(
 	{
 		gui::BeginRender();
 
-		//check if we dropped a file on this iteration
 		if (gui::fileWasDropped)
 		{
 			strncpy_s(filePathBuffer, gui::droppedFilePath, sizeof(filePathBuffer));
-
 
 			auto file = Info::getFile(filePathBuffer);
 			if (file)
@@ -52,7 +43,7 @@ int __stdcall wWinMain(
 					size_t lastSlash = pathStr.find_last_of("\\/");
 					Info::targetFile.fileName = (lastSlash == std::string::npos) ? pathStr : pathStr.substr(lastSlash + 1);
 
-					highlightSelection = 0; 
+					highlightSelection = 0;
 				}
 			}
 
@@ -60,8 +51,6 @@ int __stdcall wWinMain(
 			memset(gui::droppedFilePath, 0, sizeof(gui::droppedFilePath));
 		}
 
-
-		//start
 		ImGui::SetNextWindowPos({ 0,0 });
 		ImGui::SetNextWindowSize({ (float)gui::width, (float)gui::height });
 		ImGui::Begin("PEViewer", &gui::exit, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
@@ -71,20 +60,12 @@ int __stdcall wWinMain(
 		if (ImGui::Button("Exit")) { gui::exit = false; }
 		ImGui::Separator();
 
-
-		if (ImGui::Button("Main", { 340, 25 }))
-		{
-			menu::tab = 0;
-		}
+		if (ImGui::Button("Main", { 340, 25 })) menu::tab = 0;
 		ImGui::SameLine();
-		if (ImGui::Button("Info", { 340, 25 }))
-		{
-			menu::tab = 1;
-		}
+		if (ImGui::Button("Info", { 340, 25 })) menu::tab = 1;
 		ImGui::Separator();
 
-
-		if (menu::tab == 0)	//main
+		if (menu::tab == 0)
 		{
 			ImGui::InputText("File Path", filePathBuffer, IM_ARRAYSIZE(filePathBuffer));
 			ImGui::SameLine();
@@ -104,7 +85,6 @@ int __stdcall wWinMain(
 						size_t lastSlash = pathStr.find_last_of("\\/");
 						Info::targetFile.fileName = (lastSlash == std::string::npos) ? pathStr : pathStr.substr(lastSlash + 1);
 
-						//needed
 						highlightSelection = 0;
 					}
 				}
@@ -131,45 +111,38 @@ int __stdcall wWinMain(
 
 			if (ImGui::Combo("selectHighlight", &highlightSelection, c_items.data(), c_items.size()))
 			{
-				//only run on selection
 				if (Info::targetFile.pDosHeader)
 				{
-
-					//none
-					if (highlightSelection == 0) 
+					if (highlightSelection == 0)
 					{
 						highlightStart = 0;
 						highlightEnd = 0;
 					}
-					//dos
-					else if (highlightSelection == 1) 
+					else if (highlightSelection == 1)
 					{
 						highlightStart = 0;
 						highlightEnd = sizeof(IMAGE_DOS_HEADER);
 					}
-					//nt
-					else if (highlightSelection == 2 && Info::targetFile.pNtHeader) 
+					else if (highlightSelection == 2 && Info::targetFile.pFileHeader)
 					{
 						highlightStart = Info::targetFile.pDosHeader->e_lfanew;
-						highlightEnd = highlightStart + sizeof(IMAGE_NT_HEADERS); // add optional header size diff...
+						highlightEnd = highlightStart + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) + Info::targetFile.pFileHeader->SizeOfOptionalHeader;
 					}
-					//section
-					else if (highlightSelection == 3 && Info::targetFile.pNtHeader) 
+					else if (highlightSelection == 3 && Info::targetFile.pFileHeader)
 					{
-						highlightStart = Info::targetFile.pDosHeader->e_lfanew + sizeof(IMAGE_NT_HEADERS);
+						highlightStart = Info::targetFile.pDosHeader->e_lfanew + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) + Info::targetFile.pFileHeader->SizeOfOptionalHeader;
 						highlightEnd = highlightStart + (Info::targetFile.pFileHeader->NumberOfSections * sizeof(IMAGE_SECTION_HEADER));
 					}
-					//individual
-					else if (highlightSelection > 3) 
+					else if (highlightSelection > 3)
 					{
-						int secIndex = highlightSelection - 4; 
+						int secIndex = highlightSelection - 4;
 						if (secIndex < Info::targetFile.pSectionHeaders.size())
 						{
 							auto& sec = Info::targetFile.pSectionHeaders[secIndex];
 							highlightStart = sec.PointerToRawData;
 							highlightEnd = highlightStart + sec.SizeOfRawData;
 
-							g_scrollToOffset = highlightStart; //remove if you dont want auto scroll
+							g_scrollToOffset = highlightStart;
 						}
 					}
 				}
@@ -177,10 +150,7 @@ int __stdcall wWinMain(
 
 			ImGui::Separator();
 
-
-
 			ImGui::BeginChild("HexView", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
-
 
 			if (g_scrollToOffset != (size_t)-1)
 			{
@@ -188,18 +158,16 @@ int __stdcall wWinMain(
 				float lineNum = (float)g_scrollToOffset / bytesPerLine;
 				float lineHeight = ImGui::GetTextLineHeightWithSpacing();
 				ImGui::SetScrollY(lineNum * lineHeight);
-				g_scrollToOffset = (size_t)-1; 
+				g_scrollToOffset = (size_t)-1;
 			}
 
-			gui::DrawHex(highlightStart, highlightEnd); 
+			gui::DrawHex(highlightStart, highlightEnd);
 			ImGui::EndChild();
 		}
 
-
-		//file info
-		if (menu::tab == 1)	
+		if (menu::tab == 1)
 		{
-			if (Info::targetFile.fileSize == 0 || !Info::targetFile.pNtHeader)
+			if (Info::targetFile.fileSize == 0 || !Info::targetFile.pFileHeader)
 			{
 				ImGui::Text("No valid PE file loaded.");
 			}
@@ -228,7 +196,6 @@ int __stdcall wWinMain(
 
 				if (ImGui::BeginTable("SectionsTable", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
 				{
-
 					ImGui::TableSetupColumn("Name");
 					ImGui::TableSetupColumn("VAddress (RVA)");
 					ImGui::TableSetupColumn("VSize");
@@ -248,7 +215,6 @@ int __stdcall wWinMain(
 					ImGui::EndTable();
 				}
 
-
 				ImGui::NewLine();
 
 				ImGui::BeginChild("DataDirColumnLeft", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, -1), false, ImGuiWindowFlags_NoScrollbar);
@@ -266,9 +232,8 @@ int __stdcall wWinMain(
 								{
 									if (ImGui::GetIO().KeyCtrl)
 									{
-										//if clicked jump to its addr
 										g_scrollToOffset = func.fileOffset;
-										menu::tab = 0; 
+										menu::tab = 0;
 									}
 								}
 								if (ImGui::IsItemHovered())
@@ -278,8 +243,8 @@ int __stdcall wWinMain(
 						}
 					}
 				}
-				ImGui::EndChild(); 
-				ImGui::EndChild(); 
+				ImGui::EndChild();
+				ImGui::EndChild();
 
 				ImGui::SameLine();
 
@@ -291,25 +256,25 @@ int __stdcall wWinMain(
 					for (const auto& func : Info::targetFile.exports)
 					{
 						char label[256];
-						sprintf_s(label, "[%u] %s", func.ordinal + Info::targetFile.pDataDirectories[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress, func.name.c_str());
+						sprintf_s(label, "[Ord: %u] %s", func.ordinal, func.name.c_str());
 						if (ImGui::Selectable(label))
 						{
 							if (ImGui::GetIO().KeyCtrl)
 							{
 								g_scrollToOffset = func.fileOffset;
-								menu::tab = 0; 
+								menu::tab = 0;
 							}
 						}
 						if (ImGui::IsItemHovered())
 							ImGui::SetTooltip("Ctrl+Click to jump to file offset 0x%X", (unsigned int)func.fileOffset);
 					}
 				}
-				ImGui::EndChild(); 
-				ImGui::EndChild(); 
+				ImGui::EndChild();
+				ImGui::EndChild();
 			}
 		}
 
-		ImGui::End(); 
+		ImGui::End();
 		gui::EndRender();
 
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -321,4 +286,3 @@ int __stdcall wWinMain(
 
 	return EXIT_SUCCESS;
 }
-
